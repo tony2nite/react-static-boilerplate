@@ -150,9 +150,15 @@ tasks.set('static', () => {
           console.log('Static Render Server started');
           const URL_LIST = ['', 'about'];
 
+          const urls = require('./routes.json')
+            .filter(x => !x.path.includes(':'))
+            .map(x => (x.path ));
+
+          console.log(urls);
+
           // For the moment doing rendering one page at a time - was getting prerender errors
           var q = queue(function(path, callback) {
-            const url = `http://localhost:${PRERENDER_PORT}/http://localhost:9000/${path}`;
+            const url = `http://localhost:${PRERENDER_PORT}/http://localhost:9000${path}`;
             console.log(`Rendering ${url}`);
             request.get({
               url: url,
@@ -164,19 +170,19 @@ tasks.set('static', () => {
             console.log('All items have been rendered');
 
             // Hack to stop Prerender restarting phantom
-            prerenderServer.exit();
             browsersync.exit();
             webpack.close();
             resolve();
           }
-          q.push(URL_LIST);
+          q.push(urls);
         }
       }, 500);
     }))
     .then(() => run('bundle'))
-    .then(() => run('html'))
-    .then(() => run('sitemap'));
-    // .then(() => { setTimeout(() => process.exit()); });
+    .then(() => run('sitemap'))
+    .then(() => {
+      prerenderServer.exit();
+    });
 });
 
 //
