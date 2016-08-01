@@ -12,6 +12,7 @@
 
 const path = require('path');
 const webpack = require('webpack');
+const ExtractTextPlugin = require('extract-text-webpack-plugin');
 const AssetsPlugin = require('assets-webpack-plugin');
 const pkg = require('./package.json');
 
@@ -31,13 +32,15 @@ const config = {
   context: __dirname,
 
   // The entry point for the bundle
-  entry: [
+  entry: {
     /* Material Design Lite (https://getmdl.io) */
-    '!!style!css!react-mdl/extra/material.min.css',
-    'react-mdl/extra/material.min.js',
+    vendor: [
+      'react-mdl/extra/material.js',
+      '!!style/url!file!react-mdl/extra/material.min.css',
+    ],
     /* The main entry point of your JavaScript application */
-    './main.js',
-  ],
+    main: ['./main.js'],
+  },
 
   // Options affecting the output of the compilation
   output: {
@@ -199,10 +202,28 @@ if (!isDebug) {
   config.plugins.push(new webpack.optimize.AggressiveMergingPlugin());
 }
 
+config.module.loaders.filter((loader) =>
+  loader.loaders && loader.loaders.find((name) => /css/.test(name.split('?')[0]))
+).forEach((loader) => {
+  const [first, ...rest] = loader.loaders
+  loader.loader = ExtractTextPlugin.extract(first, rest.join('!'))
+  delete loader.loaders
+});
+
+config.plugins.push(new webpack.optimize.CommonsChunkPlugin({
+  names: ['vendor']
+}));
+
+config.plugins.push(
+  new ExtractTextPlugin('[name].[contenthash].css', {
+    allChunks: true
+  })
+);
+
 // Hot Module Replacement (HMR) + React Hot Reload
 if (isDebug && useHMR) {
   babelConfig.plugins.unshift('react-hot-loader/babel');
-  config.entry.unshift('react-hot-loader/patch', 'webpack-hot-middleware/client');
+  config.entry.main.unshift('react-hot-loader/patch', 'webpack-hot-middleware/client');
   config.plugins.push(new webpack.HotModuleReplacementPlugin());
   config.plugins.push(new webpack.NoErrorsPlugin());
 }
