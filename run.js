@@ -14,6 +14,7 @@ const fs = require('fs');
 const del = require('del');
 const ejs = require('ejs');
 const webpack = require('webpack');
+const prerender = require('prerender/lib/server');
 
 // TODO: Update configuration settings
 const config = {
@@ -46,7 +47,13 @@ tasks.set('html', () => {
   const assets = JSON.parse(fs.readFileSync('./public/dist/assets.json', 'utf8'));
   const template = fs.readFileSync('./public/index.ejs', 'utf8');
   const render = ejs.compile(template, { filename: './public/index.ejs' });
-  const output = render({ debug: webpackConfig.debug, bundle: assets.main.js, config });
+  const output = render({
+    debug: webpackConfig.debug,
+    bundleJS: assets.main.js,
+    vendorJS: assets.vendor.js,
+    bundleCSS: assets.main.css,
+    vendorCSS: assets.vendor.css,
+    config });
   fs.writeFileSync('./public/index.html', output, 'utf8');
 });
 
@@ -93,6 +100,55 @@ tasks.set('build', () => {
 });
 
 //
+// Build website into a distributable format
+// -----------------------------------------------------------------------------
+tasks.set('static', () => {
+  global.DEBUG = false;
+  global.HMR = false;
+  return Promise.resolve()
+    .then(() => run('start'))
+    .then(() => {
+      const phridge = require('phridge');
+
+      phridge.spawn()
+      .then(function (phantom) {
+        // phantom.openPage(url) loads a page with the given url
+        let p = phantom.createPage();
+        p.onLoadFinished = function(status) {
+          console.log('Status: ' + status);
+          // Do other things here...
+        };
+        return phantom.openPage('http://localhost:3000/');
+      })
+      .then(function (page) {
+        // page.run(fn) runs fn inside PhantomJS
+        return page.run(function (resolve, reject) {
+          // Here we're inside PhantomJS, so we can't reference variables in the scope
+          // 'this' is an instance of PhantomJS' WebPage as returned by require("webpage").create()
+          var self = this;
+          setTimeout(function () {
+            resolve(self.evaluate(function () {
+              return document.getElementsByTagName('html')[0].innerHTML;
+            }));
+          }, 1000);
+
+        });
+      })
+      .then(function (html) {
+        console.log('File Written');
+        fs.writeFileSync('./public/index.html', html, 'utf8');
+      })
+      .then(phridge.disposeAll)
+      .catch(function (err) {
+        console.error(err.stack);
+      });
+    })
+    .then(() => run('bundle'))
+    .then(() => run('html'))
+    .then(() => run('sitemap'));
+});
+
+//
 // Build and publish the website
 // -----------------------------------------------------------------------------
 tasks.set('publish', () => {
@@ -111,7 +167,9 @@ tasks.set('publish', () => {
 // -----------------------------------------------------------------------------
 tasks.set('start', () => {
   let count = 0;
-  global.HMR = !process.argv.includes('--no-hmr'); // Hot Module Replacement (HMR)
+  global.DEBUG = global.DEBUG === undefined ? (process.argv.includes('--debug') || true) : global.DEBUG;
+  global.HMR = global.HMR == undefined ? !process.argv.includes('--no-hmr') : global.HMR; // Hot Module Replacement (HMR)
+
   return run('clean').then(() => new Promise(resolve => {
     const bs = require('browser-sync').create();
     const webpackConfig = require('./webpack.config');
@@ -124,18 +182,42 @@ tasks.set('start', () => {
     });
     compiler.plugin('done', stats => {
       // Generate index.html page
-      const bundle = stats.compilation.chunks.find(x => x.name === 'main').files[0];
+      const bundleJS = stats.compilation.chunks.find(x => x.name === 'main').files[0];
+      const bundleCSS = stats.compilation.chunks.find(x => x.name === 'main').files[1];
+      const vendorJS = stats.compilation.chunks.find(x => x.name === 'vendor').files[0];
+      const vendorCSS = stats.compilation.chunks.find(x => x.name === 'vendor').files[1];
       const template = fs.readFileSync('./public/index.ejs', 'utf8');
       const render = ejs.compile(template, { filename: './public/index.ejs' });
-      const output = render({ debug: true, bundle: `/dist/${bundle}`, config });
+      const output = render(
+        {
+          debug: global.DEBUG,
+          bundleJS: `/dist/${bundleJS}`,
+          vendorJS: `/dist/${vendorJS}`,
+          bundleCSS: `/dist/${bundleCSS}`,
+          vendorCSS: `/dist/${vendorCSS}`,
+          config
+        });
       fs.writeFileSync('./public/index.html', output, 'utf8');
+
+      let rule = {};
+
+      if (global.DEBUG === false) {
+        rule = {
+            match: /<\/youllneverfindme>/i,
+        };
+      }
 
       // Launch Browsersync after the initial bundling is complete
       // For more information visit https://browsersync.io/docs/options
       if (++count === 1) {
+        console.log('XXX', global.DEBUG === false ? '*' : undefined)
         bs.init({
-          port: process.env.PORT || 3000,
-          ui: { port: Number(process.env.PORT || 3000) + 1 },
+          logSnippet: true,
+          port: process.env.PORT || 9000,
+          ui: { port: Number(process.env.PORT || 9000) + 1 },
+          snippetOptions: {
+            rule
+          },
           server: {
             baseDir: 'public',
             middleware: [
