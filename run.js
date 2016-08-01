@@ -14,7 +14,15 @@ const fs = require('fs');
 const del = require('del');
 const ejs = require('ejs');
 const webpack = require('webpack');
-const prerender = require('prerender/lib/server');
+const request = require('request');
+const queue = require('async/queue');
+const http = require('http');
+const cluster = require('cluster');
+const _ = require('lodash');
+
+const prerenderServer = require('prerender/lib/server');
+const prerenderFileWriter = require('./utils/prerender-file-writer');
+
 
 // TODO: Update configuration settings
 const config = {
@@ -29,9 +37,11 @@ const tasks = new Map(); // The collection of automation tasks ('clean', 'build'
 function run(task) {
   const start = new Date();
   console.log(`Starting '${task}'...`);
-  return Promise.resolve().then(() => tasks.get(task)()).then(() => {
+  return Promise.resolve().then(() => tasks.get(task)()).then((...args) => {
     console.log(`Finished '${task}' after ${new Date().getTime() - start.getTime()}ms`);
+    return args;
   }, err => console.error(err.stack));
+
 }
 
 //
@@ -103,49 +113,70 @@ tasks.set('build', () => {
 // Build website into a distributable format
 // -----------------------------------------------------------------------------
 tasks.set('static', () => {
-  global.DEBUG = false;
+  global.DEBUG = process.argv.includes('--debug') || false;
   global.HMR = false;
   return Promise.resolve()
     .then(() => run('start'))
-    .then(() => {
-      const phridge = require('phridge');
+    .then((result) => new Promise(resolve => {
+      // TODO: Tidy passing arguments from last task to this task
+      const browsersync = result[0].browsersync;
+      const webpack = result[0].webpack;
 
-      phridge.spawn()
-      .then(function (phantom) {
-        // phantom.openPage(url) loads a page with the given url
-        let p = phantom.createPage();
-        p.onLoadFinished = function(status) {
-          console.log('Status: ' + status);
-          // Do other things here...
-        };
-        return phantom.openPage('http://localhost:3000/');
-      })
-      .then(function (page) {
-        // page.run(fn) runs fn inside PhantomJS
-        return page.run(function (resolve, reject) {
-          // Here we're inside PhantomJS, so we can't reference variables in the scope
-          // 'this' is an instance of PhantomJS' WebPage as returned by require("webpage").create()
-          var self = this;
-          setTimeout(function () {
-            resolve(self.evaluate(function () {
-              return document.getElementsByTagName('html')[0].innerHTML;
-            }));
-          }, 1000);
+      const PRERENDER_PORT = 3000;
 
-        });
-      })
-      .then(function (html) {
-        console.log('File Written');
-        fs.writeFileSync('./public/index.html', html, 'utf8');
-      })
-      .then(phridge.disposeAll)
-      .catch(function (err) {
-        console.error(err.stack);
+      console.log('Waiting for Static Render Server...');
+
+      const options = {};
+      options.isMaster = false;
+      options.port = PRERENDER_PORT;
+      options.worker = {iteration: 0};
+
+      prerenderServer.init(options);
+      prerenderFileWriter.setOutputPath('./public');
+      prerenderServer.use(prerenderFileWriter);
+
+      const hostname = process.env.NODE_HOSTNAME || undefined;
+      const httpServer = http.createServer(_.bind(prerenderServer.onRequest, prerenderServer));
+      httpServer.listen(PRERENDER_PORT, undefined, function () {
+        console.log(`Render server running on port ${PRERENDER_PORT}`);
       });
-    })
+      prerenderServer.start();
+
+      // Wait for prerender to initialise
+      const startupWait = setInterval(()=> {
+        if (prerenderServer.phantom) {
+          clearInterval(startupWait);
+
+          console.log('Static Render Server started');
+          const URL_LIST = ['', 'about'];
+
+          // For the moment doing rendering one page at a time - was getting prerender errors
+          var q = queue(function(path, callback) {
+            const url = `http://localhost:${PRERENDER_PORT}/http://localhost:9000/${path}`;
+            console.log(`Rendering ${url}`);
+            request.get({
+              url: url,
+            }, (error, response, body) => {
+              callback();
+            });
+          }, 1);
+          q.drain = function() {
+            console.log('All items have been rendered');
+
+            // Hack to stop Prerender restarting phantom
+            prerenderServer.exit();
+            browsersync.exit();
+            webpack.close();
+            resolve();
+          }
+          q.push(URL_LIST);
+        }
+      }, 500);
+    }))
     .then(() => run('bundle'))
     .then(() => run('html'))
     .then(() => run('sitemap'));
+    // .then(() => { setTimeout(() => process.exit()); });
 });
 
 //
@@ -180,6 +211,7 @@ tasks.set('start', () => {
       publicPath: webpackConfig.output.publicPath,
       stats: webpackConfig.stats,
     });
+
     compiler.plugin('done', stats => {
       // Generate index.html page
       const bundleJS = stats.compilation.chunks.find(x => x.name === 'main').files[0];
@@ -201,6 +233,7 @@ tasks.set('start', () => {
 
       let rule = {};
 
+      // Hack to not include BrowserSync in markup
       if (global.DEBUG === false) {
         rule = {
             match: /<\/youllneverfindme>/i,
@@ -210,9 +243,9 @@ tasks.set('start', () => {
       // Launch Browsersync after the initial bundling is complete
       // For more information visit https://browsersync.io/docs/options
       if (++count === 1) {
-        console.log('XXX', global.DEBUG === false ? '*' : undefined)
         bs.init({
           logSnippet: true,
+          open: global.DEBUG === true,
           port: process.env.PORT || 9000,
           ui: { port: Number(process.env.PORT || 9000) + 1 },
           snippetOptions: {
@@ -226,10 +259,12 @@ tasks.set('start', () => {
               require('connect-history-api-fallback')(),
             ],
           },
-        }, resolve);
+        }, () => {
+          resolve({webpack: webpackDevMiddleware, browsersync: bs});
+        });
       }
     });
-  }));
+  }, err => console.error(err.stack)));
 });
 
 // Execute the specified task or default one. E.g.: node run build
