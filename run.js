@@ -34,7 +34,6 @@ function run(task) {
     console.log(`Finished '${task}' after ${new Date().getTime() - start.getTime()}ms`);
     return args;
   }, err => console.error(err.stack));
-
 }
 
 //
@@ -113,19 +112,18 @@ tasks.set('static', () => {
     .then((result) => new Promise(resolve => {
       // TODO: Tidy passing arguments from last task to this task
       const browsersync = result[0].browsersync;
-      const webpack = result[0].webpack;
+      const webpackDevMiddleware = result[0].webpackDevMiddleware;
 
       const urls = require('./routes.json')
         .filter(x => !x.path.includes(':'))
-        .map(x => (x.path ));
+        .map(x => (x.path));
 
       staticRenderer.render('./public', 'http://localhost:9000', urls)
         .then(() => {
           browsersync.exit();
-          webpack.close();
+          webpackDevMiddleware.close();
           resolve();
         });
-
     }))
     .then(() => run('bundle'))
     .then(() => run('sitemap'))
@@ -153,8 +151,10 @@ tasks.set('publish', () => {
 // -----------------------------------------------------------------------------
 tasks.set('start', () => {
   let count = 0;
-  global.DEBUG = global.DEBUG === undefined ? (process.argv.includes('--debug') || true) : global.DEBUG;
-  global.HMR = global.HMR == undefined ? !process.argv.includes('--no-hmr') : global.HMR; // Hot Module Replacement (HMR)
+  global.DEBUG = global.DEBUG === undefined ?
+    (process.argv.includes('--debug') || true) : global.DEBUG;
+  global.HMR = global.HMR === undefined ?
+    !process.argv.includes('--no-hmr') : global.HMR; // Hot Module Replacement (HMR)
 
   return run('clean').then(() => new Promise(resolve => {
     const bs = require('browser-sync').create();
@@ -182,7 +182,7 @@ tasks.set('start', () => {
           vendorJS: `/dist/${vendorJS}`,
           bundleCSS: `/dist/${bundleCSS}`,
           vendorCSS: `/dist/${vendorCSS}`,
-          config
+          config,
         });
       fs.writeFileSync('./public/index.html', output, 'utf8');
 
@@ -191,7 +191,7 @@ tasks.set('start', () => {
       // Hack to not include BrowserSync in markup
       if (global.DEBUG === false) {
         rule = {
-            match: /<\/youllneverfindme>/i,
+          match: /<\/youllneverfindme>/i,
         };
       }
 
@@ -204,7 +204,7 @@ tasks.set('start', () => {
           port: process.env.PORT || 9000,
           ui: { port: Number(process.env.PORT || 9000) + 1 },
           snippetOptions: {
-            rule
+            rule,
           },
           server: {
             baseDir: 'public',
@@ -215,7 +215,7 @@ tasks.set('start', () => {
             ],
           },
         }, () => {
-          resolve({webpack: webpackDevMiddleware, browsersync: bs});
+          resolve({ webpackDevMiddleware, browsersync: bs });
         });
       }
     });
