@@ -179,9 +179,9 @@ tasks.set('start', () => {
         {
           debug: global.DEBUG,
           bundleJS: `/dist/${bundleJS}`,
-          vendorJS: `/dist/${vendorJS}`,
-          bundleCSS: `/dist/${bundleCSS}`,
-          vendorCSS: `/dist/${vendorCSS}`,
+          vendorJS: vendorJS ? `/dist/${vendorJS}` : undefined,
+          bundleCSS: bundleCSS ? `/dist/${bundleCSS}` : undefined,
+          vendorCSS: vendorCSS ? `/dist/${vendorCSS}` : undefined,
           config,
         });
       fs.writeFileSync('./public/index.html', output, 'utf8');
