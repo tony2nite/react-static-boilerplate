@@ -14,15 +14,8 @@ const fs = require('fs');
 const del = require('del');
 const ejs = require('ejs');
 const webpack = require('webpack');
-const request = require('request');
-const queue = require('async/queue');
-const http = require('http');
-const cluster = require('cluster');
-const _ = require('lodash');
 
-const prerenderServer = require('prerender/lib/server');
-const prerenderFileWriter = require('./utils/prerender-file-writer');
-
+const staticRenderer = require('./utils/static-renderer');
 
 // TODO: Update configuration settings
 const config = {
@@ -122,66 +115,22 @@ tasks.set('static', () => {
       const browsersync = result[0].browsersync;
       const webpack = result[0].webpack;
 
-      const PRERENDER_PORT = 3000;
+      const urls = require('./routes.json')
+        .filter(x => !x.path.includes(':'))
+        .map(x => (x.path ));
 
-      console.log('Waiting for Static Render Server...');
+      staticRenderer.render('./public', 'http://localhost:9000', urls)
+        .then(() => {
+          browsersync.exit();
+          webpack.close();
+          resolve();
+        });
 
-      const options = {};
-      options.isMaster = false;
-      options.port = PRERENDER_PORT;
-      options.worker = {iteration: 0};
-
-      prerenderServer.init(options);
-      prerenderFileWriter.setOutputPath('./public');
-      prerenderServer.use(prerenderFileWriter);
-
-      const hostname = process.env.NODE_HOSTNAME || undefined;
-      const httpServer = http.createServer(_.bind(prerenderServer.onRequest, prerenderServer));
-      httpServer.listen(PRERENDER_PORT, undefined, function () {
-        console.log(`Render server running on port ${PRERENDER_PORT}`);
-      });
-      prerenderServer.start();
-
-      // Wait for prerender to initialise
-      const startupWait = setInterval(()=> {
-        if (prerenderServer.phantom) {
-          clearInterval(startupWait);
-
-          console.log('Static Render Server started');
-          const URL_LIST = ['', 'about'];
-
-          const urls = require('./routes.json')
-            .filter(x => !x.path.includes(':'))
-            .map(x => (x.path ));
-
-          console.log(urls);
-
-          // For the moment doing rendering one page at a time - was getting prerender errors
-          var q = queue(function(path, callback) {
-            const url = `http://localhost:${PRERENDER_PORT}/http://localhost:9000${path}`;
-            console.log(`Rendering ${url}`);
-            request.get({
-              url: url,
-            }, (error, response, body) => {
-              callback();
-            });
-          }, 1);
-          q.drain = function() {
-            console.log('All items have been rendered');
-
-            // Hack to stop Prerender restarting phantom
-            browsersync.exit();
-            webpack.close();
-            resolve();
-          }
-          q.push(urls);
-        }
-      }, 500);
     }))
     .then(() => run('bundle'))
     .then(() => run('sitemap'))
     .then(() => {
-      prerenderServer.exit();
+      staticRenderer.close();
     });
 });
 
